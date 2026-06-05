@@ -3,9 +3,9 @@ import sys
 from pathlib import Path
 
 
-def parse_requirements_txt(filepath: Path) -> list[str]:
-    """Parse a requirements.txt file and return list of package names."""
-    packages = []
+def parse_requirements_txt(filepath: Path) -> dict[str, str]:
+    """Parse a requirements.txt file and return package names with version specs."""
+    packages = {}
 
     with open(filepath, "r") as f:
         for line in f:
@@ -14,23 +14,25 @@ def parse_requirements_txt(filepath: Path) -> list[str]:
             if not line or line.startswith("#"):
                 continue
 
-            
             if line.startswith("-"):
                 continue
-            package_name = re.split(r"[>=<!~\[\s;@]", line)[0].strip()
 
-            if package_name:
-                packages.append(package_name)
+            match = re.match(r"^([A-Za-z0-9_.-]+)(.*)$", line)
+            if match:
+                package_name = match.group(1).lower()
+                version_spec = match.group(2).strip()
+                packages[package_name] = version_spec
+
     return packages
 
 
 def parse_pyproject_toml(filepath: Path) -> list[str]:
     """Parse a pyproject.toml file and return list of package names."""
     try:
-        import tomllib  
+        import tomllib
     except ImportError:
         try:
-            import tomli as tomllib  
+            import tomli as tomllib
         except ImportError:
             print("  [!] tomllib not available. Run: pip install tomli")
             return []
@@ -50,7 +52,7 @@ def parse_pyproject_toml(filepath: Path) -> list[str]:
     # Poetry style: [tool.poetry.dependencies]
     poetry_deps = data.get("tool", {}).get("poetry", {}).get("dependencies", {})
     for name in poetry_deps:
-        if name.lower() != "python":  
+        if name.lower() != "python":
             packages.append(name)
 
     return packages
@@ -75,8 +77,8 @@ def scan_folder(folder_path: str) -> None:
         found_any = True
         packages = parse_requirements_txt(req_file)
         print(f"\n requirements.txt  ({len(packages)} packages found)\n")
-        for pkg in packages:
-            print(f"   {pkg}")
+        for pkg, version in packages.items():
+            print(f"   {pkg} {version}")
 
     # pyproject.toml
     pyproject_file = folder / "pyproject.toml"
@@ -95,6 +97,5 @@ def scan_folder(folder_path: str) -> None:
 
 
 if __name__ == "__main__":
-    # Default to current directory if no argument given
     target = sys.argv[1] if len(sys.argv) > 1 else "."
     scan_folder(target)
