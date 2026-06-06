@@ -55,7 +55,7 @@ jobs:
       # 4. Copy auditor scripts into the repo 
       - name: Verify auditor scripts are present
         run: |
-          for f in dependency_reader.py auditor_intelligence.py auditor_reporter.py; do
+          for f in dependency_reader.py intelligence.py report.py; do
             if [ ! -f ".github/scripts/$f" ]; then
               echo "❌ Missing: .github/scripts/$f"
               exit 1

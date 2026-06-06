@@ -3,7 +3,7 @@ run_audit.py
 ------------
 Entrypoint called by the GitHub Actions workflow.
 
-Wires together dependency_reader → auditor_intelligence → auditor_reporter
+Wires together dependency_reader → intelligence → report
 and writes both audit_report.md and audit_results.json.
 
 Usage:
