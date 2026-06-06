@@ -1,0 +1,246 @@
+name: Tech Stack Audit
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "requirements.txt"
+      - "pyproject.toml"
+      - ".github/workflows/stack-audit.yml"
+
+  pull_request:
+    paths:
+      - "requirements.txt"
+      - "pyproject.toml"
+
+  workflow_dispatch:       
+    inputs:
+      fail_on_critical:
+        description: "Fail the workflow if critical CVEs are found"
+        required: false
+        default: "true"
+
+concurrency:
+  group: stack-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Scan dependencies
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        
+      pull-requests: write   
+
+    steps:
+      #  1. Checkout 
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     
+
+      # 2. Python setup 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # 3. Install auditor dependencies 
+      - name: Install auditor dependencies
+        run: |
+          pip install --upgrade pip
+          pip install requests pip-audit
+
+      # 4. Copy auditor scripts into the repo 
+      - name: Verify auditor scripts are present
+        run: |
+          for f in dependency_reader.py auditor_intelligence.py auditor_reporter.py; do
+            if [ ! -f ".github/scripts/$f" ]; then
+              echo "❌ Missing: .github/scripts/$f"
+              exit 1
+            fi
+          done
+          echo "✅ All auditor scripts found"
+
+      # 5. Run the audit 
+      - name: Run dependency audit
+        id: audit
+        run: |
+          python .github/scripts/run_audit.py \
+            --repo-path "${{ github.workspace }}" \
+            --output audit_report.md \
+            --json-output audit_results.json
+        env:
+          PYTHONPATH: ".github/scripts"
+
+      #  6. Parse results for workflow outputs 
+      - name: Parse audit results
+        id: results
+        run: |
+          python - <<'EOF'
+          import json, os
+
+          with open("audit_results.json") as f:
+              data = json.load(f)
+
+          results = data["results"]
+          critical = sum(1 for r in results if r["risk"] == "critical")
+          high     = sum(1 for r in results if r["risk"] == "high")
+          medium   = sum(1 for r in results if r["risk"] in ("medium", "low-medium"))
+          low      = sum(1 for r in results if r["risk"] == "low")
+          total    = len(results)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"critical={critical}\n")
+              out.write(f"high={high}\n")
+              out.write(f"medium={medium}\n")
+              out.write(f"low={low}\n")
+              out.write(f"total={total}\n")
+
+          status = "healthy"
+          if critical: status = "critical"
+          elif high:   status = "at-risk"
+          elif medium: status = "needs-review"
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"status={status}\n")
+
+          print(f"Critical: {critical} | High: {high} | Medium: {medium} | Low: {low}")
+          EOF
+
+      # 7. Write GitHub Actions Job Summary 
+      - name: Write job summary
+        run: |
+          python - <<'EOF'
+          import json, os
+
+          with open("audit_results.json") as f:
+              data = json.load(f)
+
+          results = data["results"]
+          critical = sum(1 for r in results if r["risk"] == "critical")
+          high     = sum(1 for r in results if r["risk"] == "high")
+          medium   = sum(1 for r in results if r["risk"] in ("medium","low-medium"))
+          low      = sum(1 for r in results if r["risk"] == "low")
+
+          status_line = " Healthy" if not critical and not high else (
+              " Critical — immediate action required" if critical else "⚠️ At Risk"
+          )
+
+          summary_path = os.environ["GITHUB_STEP_SUMMARY"]
+          with open(summary_path, "w") as f:
+              f.write(f"# 🔍 Tech Stack Audit\n\n")
+              f.write(f"**Status:** {status_line}\n\n")
+              f.write(f"| 🔴 Critical | 🟠 High | 🟡 Medium | 🟢 Low | Total |\n")
+              f.write(f"|:-----------:|:-------:|:---------:|:------:|:-----:|\n")
+              f.write(f"| {critical} | {high} | {medium} | {low} | {len(results)} |\n\n")
+
+              urgent = [r for r in results if r["risk"] in ("critical","high")]
+              if urgent:
+                  f.write("## Packages requiring action\n\n")
+                  for r in urgent:
+                      icon = "🔴" if r["risk"] == "critical" else "🟠"
+                      f.write(f"### {icon} `{r['package']}`\n\n")
+                      for cve in r.get("cves", []):
+                          fix = ", ".join(cve["fix_versions"]) or "no fix yet"
+                          f.write(f"- **{cve['id']}** → fix in `{fix}`\n")
+                      if r.get("is_deprecated") and r.get("replacement"):
+                          f.write(f"- Deprecated → use `{r['replacement']}`\n")
+                      f.write("\n")
+
+              f.write("---\n*Full report: `audit_report.md` in this commit.*\n")
+
+          print("Job summary written.")
+          EOF
+
+      # 8. Commit audit_report.md back to the branch 
+      - name: Commit audit report
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add audit_report.md
+
+          # Only commit if something actually changed
+          if git diff --staged --quiet; then
+            echo "No changes to audit_report.md — skipping commit."
+          else
+            git commit -m "chore(audit): update dependency audit report [skip ci]
+
+          $(python -c "
+          import json
+          with open('audit_results.json') as f: d=json.load(f)
+          r = d['results']
+          c = sum(1 for x in r if x['risk']=='critical')
+          h = sum(1 for x in r if x['risk']=='high')
+          print(f'Critical: {c}  High: {h}  Total: {len(r)}')
+          ")"
+            git push origin HEAD
+          fi
+
+      # 9. Post PR comment (only on pull_request events) 
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('audit_report.md', 'utf8');
+
+            // Truncate if enormous — GitHub PR comments cap at ~65k chars
+            const body = report.length > 60000
+              ? report.slice(0, 60000) + "\n\n...[truncated — see full `audit_report.md`]"
+              : report;
+
+            // Find existing bot comment on this PR and update it rather than spamming
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('Tech Stack Audit Report')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner:      context.repo.owner,
+                repo:       context.repo.repo,
+                comment_id: botComment.id,
+                body,
+              });
+              console.log('Updated existing PR comment.');
+            } else {
+              await github.rest.issues.createComment({
+                owner:       context.repo.owner,
+                repo:        context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+              console.log('Created new PR comment.');
+            }
+
+      # 10. Fail the build if critical CVEs found 
+      - name: Enforce security gate
+        if: >
+          steps.results.outputs.critical != '0' &&
+          (github.event.inputs.fail_on_critical == 'true' || github.event_name != 'workflow_dispatch')
+        run: |
+          echo "🚨 Security gate FAILED"
+          echo "Critical vulnerabilities: ${{ steps.results.outputs.critical }}"
+          echo ""
+          echo "Review audit_report.md for details and remediation steps."
+          exit 1
+
+      # 11. Upload report as artifact (always, even on failure) 
+      - name: Upload audit report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-report-${{ github.sha }}
+          path: |
+            audit_report.md
+            audit_results.json
+          retention-days: 90
