@@ -45,6 +45,60 @@ The output is a Markdown file that gets committed back to your repo so there is 
 │       └── report.py        # generates the Markdown report
 ```
 
+
+##  Architecture Overview
+
+```text
+Developer
+    |
+    | git push / pull request
+    v
+GitHub Actions Workflow (stack-audit.yml)
+    |
+    v
+run_audit.py
+    |
+    +----------------------+
+    |                      |
+    v                      v
+dependency_reader.py   intelligence.py
+                              |
+                              +--> PyPI JSON API
+                              |      - Latest version
+                              |      - Release dates
+                              |      - Package metadata
+                              |
+                              +--> pip-audit
+                              |      - CVE detection
+                              |      - Vulnerability database
+                              |
+                              v
+                        Risk Analysis
+                              |
+                              v
+                         results[]
+                              |
+                              v
+                         report.py
+                              |
+                              +--> audit_report.md
+                              |
+                              +--> audit_results.json
+                              |
+                              v
+                      Security Gate Check
+                              |
+                      +-------+-------+
+                      |               |
+                      v               v
+                    PASS            FAIL
+                      |               |
+                      v               v
+          Commit Report      Block Workflow
+          Update PR          Show CVEs
+          Upload Artifact
+```
+
 **`dependency_reader.py`**
 Handles all dependency file parsing. Returns a `dict[str, str]` mapping package names to their version specifications. Strips extras syntax, handles edge cases like `-r` includes and `--index-url` lines, and normalises package names to lowercase. Both `requirements.txt` and `pyproject.toml` are supported.
 
